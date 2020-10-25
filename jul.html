@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Test</title>
+</head>
+<style>
+  pre {outline: 1px solid #ccc; padding: 5px; margin: 5px; }
+  .string { color: green; }
+  .number { color: darkorange; }
+  .boolean { color: blue; }
+  .null { color: magenta; }
+  .key { color: red; }
+</style>
+<script type="text/javascript" charset="utf-8">
+  function syntaxHighlight(json) {
+    if (typeof json != 'string') {
+      json = JSON.stringify(json, undefined, 2);
+    }
+    json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+      var cls = 'number';
+      if (/^"/.test(match)) {
+        if (/:$/.test(match)) {
+          cls = 'key';
+        } else {
+          cls = 'string';
+        }
+      } else if (/true|false/.test(match)) {
+        cls = 'boolean';
+      } else if (/null/.test(match)) {
+        cls = 'null';
+      }
+      return '<span class="' + cls + '">' + match + '</span>';
+    });
+  }
+</script>
+<body>
+<script type="text/javascript" src="utils.js"></script>
+<script type="text/javascript" src="inputs.js"></script>
+<script type="text/javascript" src="textlayout.js"></script>
+<script type="text/javascript" charset="utf-8">
+  //document.body.appendChild(document.createElement('pre')).innerHTML = syntaxHighlight(inputs);
+
+  var textLayout = new TextLayout();
+
+  textLayout.computeCodeUnitProperties(inputs);
+  textLayout.breakShapedTextIntoLines(inputs, 300);
+
+</script>
+</body>
+</html>
