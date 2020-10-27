@@ -70,6 +70,7 @@ var Stretch = /** @class */ (function () {
         this.empty = true;
         if (glyphStart == undefined) {
             this.empty = true;
+            this.width = 0.0;
         }
         else {
             if (this.empty) {
@@ -116,6 +117,11 @@ var Stretch = /** @class */ (function () {
         this.metrics.merge(tail.metrics);
         tail.clean();
     };
+    Stretch.prototype.finish = function (glyphIndex, textIndex, width) {
+        this.textRange.end = textIndex;
+        this.glyphEnd.glyphIndex = glyphIndex;
+        this.width = width;
+    };
     return Stretch;
 }());
 var Line = /** @class */ (function () {
@@ -137,15 +143,31 @@ var TextLayout = /** @class */ (function () {
     function TextLayout() {
         this.fLines = new Array(0);
     }
+    TextLayout.prototype.shape = function () { };
     TextLayout.prototype.measure = function (width) { };
     TextLayout.prototype.paint = function (x, y) { };
     TextLayout.prototype.hasProperty = function (index, flag) {
         return (this.fCodeUnitProperties[index] & flag) === flag;
     };
+    TextLayout.prototype.isHardLineBreak = function (index) {
+        return this.hasProperty(index, CodeUnitFlagsEnum.kHardLineBreakBefore);
+    };
+    TextLayout.prototype.isSoftLineBreak = function (index) {
+        return this.hasProperty(index, CodeUnitFlagsEnum.kSoftLineBreakBefore);
+    };
     TextLayout.prototype.isWhitespaces = function (stretch) {
-        for (var i = stretch.textRange.start; i < stretch.textRange.end; ++i) {
-            if (!this.hasProperty(i, CodeUnitFlagsEnum.kPartOfWhiteSpace)) {
-                return false;
+        if (stretch.textRange.width() > 0) {
+            for (var i = stretch.textRange.start; i < stretch.textRange.end; ++i) {
+                if (!this.hasProperty(i, CodeUnitFlagsEnum.kPartOfWhiteSpace)) {
+                    return false;
+                }
+            }
+        }
+        else if (stretch.textRange.width() < 0) {
+            for (var i = stretch.textRange.start; i > stretch.textRange.end; --i) {
+                if (!this.hasProperty(i, CodeUnitFlagsEnum.kPartOfWhiteSpace)) {
+                    return false;
+                }
             }
         }
         return true;
@@ -171,97 +193,130 @@ var TextLayout = /** @class */ (function () {
         stretch.clean();
         spaces.clean();
     };
-    // Add textDirection
     TextLayout.prototype.breakShapedTextIntoLines = function (inputs, lineMax) {
         // line : spaces : clusters
+        var textLayout = this;
         var line = new Stretch();
         var spaces = new Stretch();
         var clusters = new Stretch();
-        // Iterate through all the runs
-        var textLayout = this;
         inputs.runs.forEach(function (run, runIndex) {
             var cluster = null;
-            // Iterate through all glyphs in the run
-            run.positions.forEach(function (pos, posIndex) {
-                var index = run.clusters[posIndex];
+            run.clusters.forEach(function (textIndex, glyphIndex) {
                 if (!cluster) {
-                    // First cluster in the run
-                    cluster = new Stretch(new GlyphPos(runIndex, posIndex), index, new Metrics(run.font));
+                    cluster = new Stretch(new GlyphPos(runIndex, glyphIndex), textIndex, new Metrics(run.font));
                     return;
                 }
-                else if (cluster.textRange.start === index) {
-                    // Skip all the glyphs of the same cluster
+                else if (cluster.textRange.start == textIndex) {
                     return;
                 }
-                // Finish the cluster
-                console.assert(cluster.glyphStart.runIndex === runIndex);
-                cluster.textRange.end = index;
-                cluster.glyphEnd = new GlyphPos(runIndex, posIndex);
-                cluster.width = pos.x - run.positions[cluster.glyphStart.glyphIndex].x;
-                var isHardLineBreak = textLayout.hasProperty(cluster.textRange.start, CodeUnitFlagsEnum.kHardLineBreakBefore);
-                var isSoftLineBreak = textLayout.hasProperty(cluster.textRange.start, CodeUnitFlagsEnum.kSoftLineBreakBefore);
+                console.assert(cluster.glyphStart.runIndex === runIndex, "The entire cluster belongs to a single run");
+                var width = run.positions[glyphIndex].x - run.positions[cluster.glyphStart.glyphIndex].x;
+                cluster.finish(glyphIndex, textIndex, width);
+                var isHardLineBreak = textLayout.isHardLineBreak(cluster.textRange.start);
+                var isSoftLineBreak = textLayout.isSoftLineBreak(cluster.textRange.start);
                 var isWhitespaces = textLayout.isWhitespaces(cluster);
-                var isEndOfText = posIndex === run.positions.length - 1;
+                var isEndOfText = textIndex === inputs.text.length;
                 if (isHardLineBreak || isEndOfText || isSoftLineBreak || isWhitespaces) {
-                    // Word break; normalize the line
                     if (!clusters.isEmpty()) {
                         line.moveTo(spaces);
                         line.moveTo(clusters);
                     }
+                    if (isWhitespaces) {
+                        spaces.moveTo(cluster);
+                    }
+                    if (isEndOfText) {
+                        line.moveTo(cluster);
+                    }
                 }
                 if (isHardLineBreak) {
-                    // Whatever we had before it does fit the line
                     textLayout.addLine(line, spaces);
-                    // Ignore the cluster itself with hard line break?
+                    return;
                 }
                 else if (isEndOfText) {
-                    line.moveTo(cluster);
                     if (!line.isEmpty()) {
                         textLayout.addLine(line, spaces);
                     }
                     return;
                 }
-                else if (isWhitespaces) {
-                    // We don't have to add a line - whitespaces get trimmed at the end of the line
-                    if (line.isEmpty()) {
-                        // Ignore the space at the beginning of the line
-                    }
-                    else {
-                        console.assert(spaces.isEmpty() && clusters.isEmpty());
-                        spaces.moveTo(cluster);
-                    }
-                }
-                else if ((line.width + spaces.width + clusters.width + cluster.width) > lineMax) {
-                    var lineText = line.isEmpty() ? "[]" : inputs.text.substring(line.textRange.start, line.textRange.end);
-                    var clustersText = clusters.isEmpty() ? "[]" : inputs.text.substring(clusters.textRange.start, clusters.textRange.end);
-                    var clusterText = cluster.isEmpty() ? "[]" : inputs.text.substring(cluster.textRange.start, cluster.textRange.end);
-                    console.log("line:     '" + lineText + "' " + spaces.width + "\n");
-                    console.log("clusters: '" + clustersText + "'\n");
-                    console.log("cluster:  '" + clusterText + "'\n");
-                    // The cluster does not fit the line
-                    if (!line.isEmpty()) {
-                        // Add what we have on the line
-                        clusters.moveTo(cluster);
-                    }
-                    else if (!clusters.isEmpty()) {
-                        // The word does not fit the line; add as many clusters as we can
-                        line.moveTo(clusters);
-                        clusters.moveTo(cluster);
-                    }
-                    else {
-                        // The cluster does not fit the line anyway; add it clipped
-                        line.moveTo(cluster);
-                    }
-                    textLayout.addLine(line, spaces);
-                }
-                else {
-                    // A regular cluster that fits the line: go on
+                if ((line.width + spaces.width + clusters.width + cluster.width) <= lineMax) {
                     clusters.moveTo(cluster);
                 }
-                cluster = new Stretch(new GlyphPos(runIndex, posIndex), index, new Metrics(run.font));
+                else {
+                    // Wrapping the text by whitespaces
+                    if (line.isEmpty()) {
+                        if (clusters.isEmpty()) {
+                            line.moveTo(cluster);
+                        }
+                        else {
+                            line.moveTo(clusters);
+                        }
+                    }
+                    textLayout.addLine(line, spaces);
+                    clusters.moveTo(cluster);
+                }
+                cluster = new Stretch(new GlyphPos(runIndex, glyphIndex), textIndex, new Metrics(run.font));
             });
+            /*
+                  run.positions.forEach(function(glyphOffset, glyphIndex) {
+            
+                    const index = run.clusters[glyphIndex];
+                    if (!cluster) {
+                      cluster = new Stretch(new GlyphPos(runIndex, glyphIndex), index, new Metrics(run.font));
+                      return;
+                    } else if (cluster.textRange.start === index) {
+                      return;
+                    }
+            
+                    console.assert(cluster.glyphStart.runIndex === runIndex);
+                    cluster.textRange.end = index;
+                    cluster.glyphEnd = new GlyphPos(runIndex, glyphIndex);
+                    cluster.width = glyphOffset.x - run.positions[cluster.glyphStart.glyphIndex].x;
+            
+                    const isHardLineBreak = textLayout.isHardLineBreak(cluster.textRange.start);
+                    const isSoftLineBreak = textLayout.isSoftLineBreak(cluster.textRange.start);
+                    const isWhitespaces = textLayout.isWhitespaces(cluster);
+                    const isEndOfText = glyphIndex === run.positions.length;
+            
+                    if (isEndOfText) {
+                      clusters.moveTo(cluster);
+                    }
+            
+                    if (isHardLineBreak || isEndOfText || isSoftLineBreak || isWhitespaces) {
+                      if (!clusters.isEmpty()) {
+                        line.moveTo(spaces);
+                        line.moveTo(clusters);
+                      }
+                    }
+            
+                    if (isHardLineBreak) {
+                      textLayout.addLine(line, spaces);
+                      return;
+                    }
+                    if (isEndOfText) {
+                      console.assert (!line.isEmpty(), "Line cannot be empty - we just found the last cluster");
+                      textLayout.addLine(line, spaces);
+                      return;
+                    }
+            
+                    if (isWhitespaces) {
+                      spaces.moveTo(cluster);
+                    } else if ((line.width + spaces.width + clusters.width + cluster.width) <= lineMax) {
+                      clusters.moveTo(cluster);
+                    } else {
+                      if (line.isEmpty()) {
+                        if (clusters.isEmpty()) {
+                          line.moveTo(cluster);
+                        } else {
+                          line.moveTo(clusters);
+                        }
+                      }
+                      textLayout.addLine(line, spaces);
+                      clusters.moveTo(cluster);
+                    }
+                    cluster = new Stretch(new GlyphPos(runIndex, glyphIndex), index, new Metrics(run.font));
+                  });
+            */
         });
-        //document.body.appendChild(document.createElement('pre')).innerHTML = syntaxHighlight(textLayout.#Lines);
         textLayout.fLines.forEach(function (line, lineIndex) {
             var text = inputs.text.substring(line.text.start, line.text.end);
             document.body.appendChild(document.createElement('pre')).innerHTML += text + "\n";
