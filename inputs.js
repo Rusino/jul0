@@ -4,7 +4,7 @@ const inputs =
       "dir": 0, // ltr
       "blocks": [
         {
-          "range": {
+          "textRange": {
             "start": 0,
             "end": 80
           },
@@ -27,11 +27,12 @@ const inputs =
             "x": 683.105,
             "y": 23.4375
           },
-          "range": {
+          "textRange": {
             "start": 0,
             "end": 80
           },
           "font": {
+            "id": 1,
             "name": "Roboto",
             "metrics": {
                 "ascent": 10,

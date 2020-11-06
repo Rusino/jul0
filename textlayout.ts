@@ -179,6 +179,7 @@ class Line {
   public whitespaces : TextRange;
   public textWidth : number;
   public spacesWidth : number;
+  public metrics : Metrics;
 
   constructor()
   constructor(stretch, spaces)
@@ -196,6 +197,8 @@ class Line {
     this.spacesWidth = spaces.width;
   }
 }
+
+type SingleRunSingleStyleCallback = (style, glyphRange) => number;
 
 class TextLayout {
 
@@ -263,6 +266,51 @@ class TextLayout {
       this.fLines.push(new Line(stretch, spaces));
       stretch.clean();
       spaces.clean();
+  }
+
+  private findCluster(run, glyphIndex : number) {
+      return run.clusters[glyphIndex];
+  }
+
+  intersect(a, b) {
+      return { start : Math.max(a.start, b.start), end : Math.min(a.end, b.end) };
+  }
+
+  width(a) {
+      return a.end - a.start;
+  }
+
+  glyphRangeWidth(run, glyphRange) {
+      return run.positions[glyphRange.end] - run.positions[glyphRange.start];
+  }
+
+  glyphRange(run, textRange) {
+      let glyphRange = { start: undefined, end: undefined};
+      for (let i = 0; i < run.clusters.size(); ++i) {
+          const cluster = run.clusters[i];
+          if (cluster < textRange.start) continue;
+          if (cluster > textRange.end) break;
+
+          if (glyphRange.start == undefined) {
+              glyphRange.start = i;
+          }
+          glyphRange.end = i;
+      }
+      return glyphRange;
+  }
+
+  textRange(run, glyphRange) {
+      let textRange = { start: undefined, end: undefined };
+      for (let i = 0; i < run.clusters.size(); ++i) {
+          const cluster = run.clusters[i];
+          if (i < glyphRange.start) continue;
+          if (i > glyphRange.end) break;
+
+          if (textRange.start == undefined) {
+            textRange.start = i;
+          }
+          textRange.end = i;
+      }
   }
 
   breakShapedTextIntoLines(inputs, lineMax) {
@@ -391,6 +439,81 @@ class TextLayout {
      textLayout.fLines.forEach(function(line, lineIndex) {
       const text = inputs.text.substring(line.text.start, line.text.end);
       document.body.appendChild(document.createElement('pre')).innerHTML += text + "\n";
+    });
+  }
+
+  breakRunIntoStyles(inputs, runStart, run, glyphRange, callback: SingleRunSingleStyleCallback) {
+
+      const textRange = this.glyphRange(run, glyphRange);
+      for (let block of inputs.blocks) {
+
+          const intersect = this.intersect(block.textRange, textRange);
+          if (this.width(intersect) == 0) {
+              continue;
+          }
+
+          const glyphRange = this.glyphRange(run, intersect);
+          runStart += callback(block.style, glyphRange);
+      }
+  }
+
+  generateDrawingOperations(inputs, outputs) {
+
+    const textLayout = this;
+    // TODO: Sort runs on the line accordingly to the visual order (for LTR/RTL mixture)
+    // Iterate through all the runs on the line
+    let runStart = 0.0;
+    let lineVerticalStart = 0.0;
+    this.fLines.forEach(function (line, lineIndex) {
+      var run = null;
+      var lastRunIndex;
+      for (var runIndex = line.textStart.runIndex; runIndex <= line.textEnd.runIndex; ++runIndex) {
+        if (run != null && lastRunIndex != runIndex) {
+            continue;
+        }
+        run = inputs.runs[runIndex];
+        lastRunIndex = runIndex;
+        let runGlyphRange = {
+            start: line.textStart.runIndex ? line.textStart.glyphIndex : 0,
+            end: line.textEnd.runIndex ? line.textEnd.glyphIndex : run.glyphs.size()
+        }
+
+        // Iterate through all the styles in the run
+        // TODO: For now assume that the style edges are cluster edges and don't fall between clusters
+        // TODO: Just show the text, not decorations of any kind
+        textLayout.breakRunIntoStyles(inputs, runStart, run, runGlyphRange, function(style, glyphRange) {
+          // left, top, right, bottom
+          let runWidth = textLayout.glyphRangeWidth(run, glyphRange);
+          if (style.background == undefined) {
+            return runWidth;
+          }
+          let rectangle = {
+              backgroundColor: style.background,
+              left: runStart,
+              top: lineVerticalStart,
+              width: runWidth,
+              height: run.font.metrics.ascent + run.font.metrics.descent + run.font.metrics.leading
+          };
+          outputs.rectangles.push(rectangle);
+          return runWidth;
+        });
+
+        textLayout.breakRunIntoStyles(inputs, runStart, run, runGlyphRange, function(style, glyphRange) {
+          // TODO: Ignore clipping cluster by position for now
+          let textBlob = {
+              foregroundColor: style.foreground,
+              run : runIndex,
+              glyphRange: glyphRange,
+              shift: {
+                  x: runStart,
+                  y: lineVerticalStart
+              }
+          };
+          outputs.textBlobs.push(textBlob);
+
+          return textLayout.glyphRangeWidth(run, glyphRange);
+        });
+      }
     });
   }
 }
